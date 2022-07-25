@@ -1,0 +1,286 @@
+---
+title: "TD master 2 - Estimateur du total de Horvitz-Thompson"
+author: "Claire Kermorvant"
+date: "31 aout 2022"
+output:
+  html_document:
+    fig_caption: yes
+    keep_md: yes
+    number_sections: yes
+  pdf_document:
+    fig_caption: yes
+    keep_tex: yes
+    latex_engine: lualatex 
+    number_sections: yes
+  fontsize: 12pt
+---
+
+Ce TD est utilisé dans l'U.E. stratégies d'échantillonnage dispensée dans le master Sciences de l'Eau de l'Université de Pau et des Pays de l'Adour. Pour tous renseignements, veuillez contacter Claire Kermorvant à l'adresse claire@statenco.com.
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+
+
+Nous allons utiliser l'estimateur de Horvitz-Thompson du total pour calculer le total d'une variable dans une population à partir d'un échantillonnage. 
+Nous allons pour cela commencer par créer une population de 2500 unités statistiques dans une grille (de 50x50 cases) et créer une variable Y - qui sera la variable que nous allons chercher à estimer ($\hat{Y}$) par échantillonnage. Comme cela est le plus répandu dans la nature, la variable Y aura une dispersion suivant une loi normale N(mu,x).
+
+```{r}
+library(tidyverse)
+library(spsurvey)
+library(sampling)
+library(sp)
+```
+
+
+
+#Création de la population 
+
+\begingroup
+```{r Pop creation, echo=TRUE, fig.keep="none", message=FALSE, warning=FALSE, results="hide"}
+
+ #Grille de 50 x 50 cases 
+side=50
+my.mat <- matrix(NA, nrow=side, ncol=side)
+x.coord <- rep(1:side, each=side)
+y.coord <- rep(1:side, times=side)
+xy <- data.frame(x.coord, y.coord)
+
+  #On cr?e une variable r?ponse N(100,5), pour pas avoir de valeurs n?gatives
+z<-data.frame(z = rnorm(length(xy[,1]),100,5))
+
+population<-SpatialPointsDataFrame(xy,z)
+population<-st_as_sf(population)
+
+plot(population, pch = 1)
+
+
+
+
+
+```
+\endgroup
+
+
+*On summary z*
+
+\begingroup
+```{r z,  echo = T,results = "hide",message = FALSE}
+summary(z)
+sum(z)
+
+```
+\endgroup
+
+# Tirage des unités statistiques
+
+Nous allons tester plusieurs protocoles d'échantillonnages pour le calcul de l'estimateur de Horvitz-Thompson : l'aléatoire simple (SRS - simple ransom sampling), l'échantillonnage systématique (SS) et le Generalized random tesselation sampling (GRTS). 
+Pour observer **l'erreur d'échantillonnage** due au caractère aléatoire de chacun de ces protocoles, nous allons réaliser 500 simulations d'un tirage d'un échantillon composé de $x$ d'unités statistiques. 
+
+
+```{r var,warning= F, message = FALSE, echo = T}
+pts=250                           # nombre d'unités statistiques que l'on veut dans l'échantillon
+nb_us<-2500                       # nombre d'unités statistiques de la population
+nsimul=500                          # nombre de simulations
+```
+
+## Avec un protocole en aléatoire simple 
+
+
+```{r srs,  echo = T,warning= F, results = "hide",fig.keep="none",cache=T}
+res_srs <-rep(list(),nsimul) # on crée une liste vide où on va mettre les résultats des 500 simulations
+for (i in 1:nsimul){
+  SRSpts <- spsurvey::irs(population, n_base = pts, projcrs_check = FALSE)
+  res_srs[i] <-list(cbind(SRSpts$sites_base$X,SRSpts$sites_base$Y,SRSpts$sites_base$z))
+  i<-i+1
+}
+
+
+sample<-res_srs[[2]]# on en prend un au hasard
+sample_exemple <- SpatialPointsDataFrame(sample[,1:2],as.data.frame(sample[,3]))
+sample_exemple<-st_as_sf(sample_exemple)
+
+
+plot(sample_exemple, pch = 16) 
+
+```
+
+## Avec un protocole d'échantillonnage systématique
+
+```{r sss,  echo = T,message = FALSE,results = "hide", fig.keep="none",cache=T}
+res_sss <-rep(list(),nsimul) # on cr?e une liste vide où on va mettre les r?sultats des 500 simulations
+pik <- inclusionprobabilities(rep(pts/2500,2500),pts)
+for (i in 1:nsimul){
+  SSSpts <- UPsystematic(pik)
+  SSSpts <- data_frame(x= x.coord, y = y.coord, z = z[,1], sss = SSSpts)
+  res_sss[[i]] <- SSSpts %>% filter(sss == 1) %>% as.data.frame()
+  i<-i+1
+}
+
+head(res_sss)
+sample <- res_sss[[2]]
+sample_exemple <- SpatialPointsDataFrame(sample[,1:2],as.data.frame(sample[,3]))
+sample_exemple<-st_as_sf(sample_exemple)
+plot(sample_exemple, pch = 16, main = "Exemple tirage Systématique") 
+
+```
+
+## Avec un protocole d'échantillonnage GRTS
+
+```{r grts,  echo = T, message = FALSE,fig.keep="none", results = "hide", cache=T}
+res_grts <-rep(list(),nsimul) # on cr?e une liste vide où on va mettre les r?sultats des 500 simulations
+for (i in 1:nsimul){
+  GRTSpts <- spsurvey::irs(population, n_base = pts, projcrs_check = FALSE)
+  res_grts[i] <-list(cbind(GRTSpts$sites_base$X,GRTSpts$sites_base$Y,GRTSpts$sites_base$z))
+  i<-i+1
+}
+
+head(res_grts)
+plot(res_grts[[2]])
+
+```
+
+
+
+# Calcul de l'estimateur du total de Horvitz-Thompson
+
+Ici, nous allons utiliser le package "sampling" pour calculer l'estimateur du total de Horvitz-Thompson ainsi que sa variance.
+Cet estimateur a besoin de connaitre les probabilités d'inclusion de premier ordre de chaque unité d'échantillonnage sélectionnées parmi les unités statistiques de la population de base. Comme nous n'utilisons que des protocoles d'échantillonnages dits "simples" et que les tirages des u.s sont avec remise; toutes les unitées statistiques de la population ont la même probabilité d'être tirées = ont la même probabilité d'inclusion de premier ordre dans l'échantillon. Dans ce cas là, le calcul de la probabilité d'inclusion d'une unité statistique est facile; c'est le nombre d'unités échantillonnés (n) divisé par le nombre total d'unités statistiques dans la population (N).
+
+
+
+```{r prob_incl, message = FALSE, echo = T}
+# on crée un vecteur de probabilités d'inclusion de la même longueur que l'échantillon 
+inclprob<- rep((pts/nb_us), pts)
+# on crée le vecteur des pikl = probabilité d'inclusion d'ordre 2
+pikl=outer(inclprob,inclprob,"*")
+diag(pikl)=inclprob
+```
+
+
+## Pour l'aléatoire simple
+```{r HT_srs,  echo = T,results = "hide", fig.keep="none",cache=T}
+HT_srs<- rep(0,nsimul) # on crée un vecteur vide qui prendra les valeurs de HT pour chaque simulation
+for (i in 1:nsimul){
+  HT_srs[i] <- HTestimator(res_srs[[i]][,3],inclprob)
+  i<-i+1
+}
+boxplot(HT_srs)
+
+sd_HT_srs<- rep(0,nsimul) # on crée un vecteur vide qui prendra les valeurs de HT pour chaque simulation
+for (i in 1:nsimul){
+  sd_HT_srs[i] <- sqrt(varHT(res_srs[[i]][,3], pikl, 1))
+  i<-i+1
+}
+boxplot(sd_HT_srs)
+```
+
+
+## Pour le systématique
+
+```{r HT_sss,  echo = T, fig.keep="none",cache=T}
+HT_sss<- rep(0,nsimul) # on crée un vecteur vide qui prendra les valeurs de HT pour chaque simulation
+for (i in 1:nsimul){
+  HT_sss[i] <- HTestimator(res_sss[[i]][,3],inclprob)
+  i<-i+1
+}
+boxplot(HT_sss)
+
+sd_HT_sss<- rep(0,nsimul) # on crée un vecteur vide qui prendra les valeurs de HT pour chaque simulation
+for (i in 1:nsimul){
+  sd_HT_sss[i] <- sqrt(varHT(res_sss[[i]][,3], pikl, 1))
+  i<-i+1
+}
+boxplot(sd_HT_sss)
+
+```
+
+
+## Pour le GRTS
+
+```{r HT_grts,  echo = T,fig.keep="none", cache=T}
+HT_grts<- rep(0,nsimul) # on crée un vecteur vide qui prendra les valeurs de HT pour chaque simulation
+for (i in 1:nsimul){
+  HT_grts[i] <- HTestimator(res_grts[[i]][,3],inclprob)
+  i<-i+1
+}
+boxplot(HT_grts)
+
+sd_HT_grts<- rep(0,nsimul) # on crée un vecteur vide qui prendra les valeurs de HT pour chaque simulation
+for (i in 1:nsimul){
+  sd_HT_grts[i] <- sqrt(varHT(res_grts[[i]][,3], pikl, 1))
+  i<-i+1
+}
+boxplot(sd_HT_grts)
+
+```
+
+
+
+## Comparaison des différents protocoles
+
+
+```{r comp, fig.keep="none", echo = T}
+HT_tot<-cbind(HT_srs,HT_sss, HT_grts)
+boxplot(HT_tot, main = "Comparaison des HT")
+abline(h = sum(z), col = "red")
+
+sd_HT_tot<-cbind(sd_HT_srs,sd_HT_sss, sd_HT_grts)
+boxplot(sd_HT_tot, main = "Comparaison des sd HT")
+abline(h = sum(z), col = "red")
+```
+
+
+Refaites cet exercice avec des tailles d'échantillons différentes. Que remarquez-vous?
+Quel protocole d'échantillonnage est'il préférable d'utiliser?
+
+
+
+# Population avec une distribution non hétérogène sur le site d'étude
+
+La population précedente a une distribution assez homogène sur le site d'étude. Dans cette partie, vous allez créer des populations plus ou moins hétérogènes et mettre en évidence lequel des trois protocoles testés est préférable pour ce genre de populations.
+
+
+
+```{r heterogene pop, fig.keep="none", echo = T}
+
+# cr?er z, une variable qui representera la distribution de l'esp?ce dans la zone d'?tude (en pr?sence absence)
+a<-seq(from= 50, to=1, length.out =  2500)
+pik=inclusionprobabilities(a, 2000)
+z<-rep_len(UPpoisson(pik),2500)
+
+# application d'un variable r?ponse de distribution normale sur z 
+
+rnorm<-rnorm(length(z),100,10)
+for (i in 1:length(z)) {
+  if (z[i]==1) z[i]<- rnorm[i]
+  else i<-i+1
+}
+population<-cbind(x.coord,y.coord,z)
+```
+
+
+autre exemple de population hétérogène :
+
+
+```{r heterogene pop2, fig.keep="none", echo = T}
+a1<-seq(from= 1, to=25, length.out =  1275)
+a2<-seq(from= 25, to=1, length.out =  1275)          
+a<-c(a1,a2,a1)
+
+pik=inclusionprobabilities(a, 2000)
+z<-rep_len(UPpoisson(pik),2500)
+
+# application d'un variable r?ponse de distribution normale sur z 
+
+rnorm<-rnorm(length(z),100,10)
+for (i in 1:length(z)) {
+  if (z[i]==1) z[i]<- rnorm[i]
+  else i<-i+1
+}
+population<-cbind(x.coord,y.coord,z)
+```
+
+
+
